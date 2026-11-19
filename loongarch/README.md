@@ -71,6 +71,10 @@ export PROXY_URL="http://127.0.0.1:20171"
 # 需要 Forge（DH 只在 ≤1.20.1 提供 Forge）时，同时构建两个 MC 目标：
 ./loongarch/scripts/build-dh-loongarch.sh --all-loaders
 # 等价于： MC_VERSIONS="26.3.0 1.20.1" ./loongarch/scripts/build-dh-loongarch.sh
+
+# 默认使用 LIEF 做 native 重定位（见 4.1）；
+# 没有 LIEF/无法访问镜像时回退到编译期改号方案：
+./loongarch/scripts/build-dh-loongarch.sh --no-lief
 ```
 
 产物在 `loongarch/dist/`：
@@ -103,8 +107,8 @@ CI 中通过 `DH_DIST_NAME_WITH_MC=1` 强制加后缀（矩阵按 MC 版本并�
 
 # 注册到本地 Maven 仓库并生成注入配置
 ./loongarch/scripts/inject-so-into-dh-build.sh [--verify]
-# 改走上游 LIEF 重定位（需要可用的 lief，见 4.1）：
-./loongarch/scripts/inject-so-into-dh-build.sh --use-lief
+# 默认即 LIEF（见 4.1）；回退到无 LIEF 方案：
+./loongarch/scripts/inject-so-into-dh-build.sh --no-lief
 
 # 手动构建（与脚本等价）
 ./gradlew --init-script loongarch/scripts/dh-loongarch-init.gradle \
@@ -130,70 +134,45 @@ CI 中通过 `DH_DIST_NAME_WITH_MC=1` 强制加后缀（矩阵按 MC 版本并�
    二进制做符号重写，最终 jar 内出现
    `dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so`。
 
-### 4.1 LoongArch 上没有 LIEF，如何处理 native 重定位
+### 4.1 native 重定位：默认走 LIEF，保留无 LIEF 回退
 
-DH 的 `NativeTransformer` 在改动 ELF 符号后会用 LIEF（`lief==0.16.2`）重写
-二进制，并且只有在 `relocate_natives/cache/` 未命中时才会创建 venv 并
-`pip install`。**PyPI 上没有 lief 0.16.2 的 loongarch64 分发包**（只有
-x86_64/aarch64 wheel，源码构建也失败）。
+DH 的 `NativeTransformer` 对 `org/sqlite/native/**` 的处理是：先在二进制里
+做字符串替换（`org/sqlite`→`dh_sqlite`、`org_sqlite`→`dh_1sqlite`），再用
+LIEF 的 `fix_modified_binary.py` 重写 ELF。**裸替换后必须重写 `.gnu.hash`**，
+否则 `dlsym("Java_dh_1sqlite_...")` 找不到符号，运行时报
+`UnsatisfiedLinkError: dh_sqlite.core.NativeDB._open_utf8`。
 
-不过龙芯 PyPI 镜像提供 **lief 0.17.4 / 0.17.5 / 0.17.6 / 1.0.0** 的
-loongarch64 wheel：
+#### 默认模式：LIEF（`--use-lief` 已无需显式指定）
 
-```bash
-pip install --extra-index-url https://mirrors.loong64.com/pypi/simple lief==0.17.6
-```
+`inject-so-into-dh-build.sh` 会自动准备 `relocate_natives/.venv`：
 
-实测 **0.17.6 与 DH 的 `fix_modified_binary.py` 兼容**：对裸替换后的 so
-做 `lief.parse` + `binary.write` 后，`nm -D` 与 `dlsym` 都能解析改名后的
-`Java_dh_1sqlite_*` 符号。因此有两种模式：
-
-| 模式 | 开关 | 依赖 | 说明 |
-| --- | --- | --- | --- |
-| 默认：编译期改号 + 预置缓存 | （默认） | 无 | 不依赖 Python/LIEF，本地/CI 行为一致，已实机验证 |
-| 上游 LIEF 流程 | `--use-lief` | 可用的 lief（默认 0.17.6） | 自动创建 `relocate_natives/.venv`，DH 的 prepare() 检测到后跳过 pip，由 DH 自己完成重定位 |
-
-`--use-lief` 示例（镜像需要直连，脚本已对 `mirrors.loong64.com` 自动绕过代理）：
-
-```bash
-./loongarch/scripts/build-dh-loongarch.sh --use-lief
-# 或单独执行：
-./loongarch/scripts/inject-so-into-dh-build.sh --use-lief \
-  --lief-index-url https://mirrors.loong64.com/pypi/simple
-```
-
-**关键点**：在成品 `.so` 上直接做字符串替换是**不可行**的 —— ELF 的
-`.gnu.hash`/`.dynsym` 仍指向旧名字，`dlsym("Java_dh_1sqlite_...")` 会失败，
-运行时报 `UnsatisfiedLinkError: 'void dh_sqlite.core.NativeDB._open_utf8(byte[], int)'`。
-LIEF 的 `fix_modified_binary.py` 正是用来重建这些表的。
-
-因此 `build-sqlitejdbc-loongarch.sh` 会从同一份源码产出**两个** `.so`：
-
-| 产物 | 符号 | 用途 |
+| 构建机架构 | lief 版本 | 来源 |
 | --- | --- | --- |
-| `loongarch/.build/native/libsqlitejdbc.so` | `Java_org_sqlite_*` | 打进 sqlite-jdbc jar，独立使用 sqlite-jdbc 时加载 |
-| `loongarch/.build/native/libsqlitejdbc-dh-relocated.so` | `Java_dh_1sqlite_*` | 预置到 DH 的 relocator 缓存，供 shadow 后的 `dh_sqlite` 类加载 |
+| loongarch64（本机） | `0.17.6` | 龙芯 PyPI 镜像 `https://mirrors.loong64.com/pypi/simple`（0.16.2 没有 loongarch wheel，镜像只提供 0.17.4+） |
+| x86_64 / aarch64（CI） | `0.16.2` | PyPI（DH 的固定版本，有 manylinux wheel） |
 
-重定位版本的做法是**编译期改号**：
+DH 的 `prepare()` 检测到 `.venv/bin/python` 能 `import lief` 后就不再执行
+`pip install`，直接使用该 venv 完成重定位。镜像需要直连，脚本对
+`mirrors.loong64.com` 会自动去掉 `*_proxy`。
 
-1. 把 `NativeDB.c` / 生成的 `NativeDB.h` 中 `Java_org_sqlite_` 改成
-   `Java_dh_1sqlite_`；
-2. 把 `NativeDB.c` 里 `FindClass` 用的 `"org/sqlite/..."` 字符串改成
-   `"dh_sqlite/..."`；
-3. 重新链接，由链接器生成与改名后符号匹配的 `.gnu.hash`；
-4. 还原本地源码，保证可重复构建。
+**LIEF 是跨架构的二进制解析器**：在 x86_64 CI 上解析并重写 LoongArch ELF 完全
+可行（不需要 QEMU，也不执行该二进制）。DH 仓库里已提交的
+`relocate_natives/cache/linux/loongarch64/libzstd-jni_dh-1.5.7-12.so` 就是上游
+在 x86 构建机上生成的 LoongArch 重定位产物。
 
-随后 `inject-so-into-dh-build.sh` 把重定位版本复制到：
+#### 回退模式：`--no-lief`（编译期改号 + 预置缓存）
 
-```
-relocate_natives/cache/dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so
-```
+如果构建机没有可用的 LIEF / 无法访问镜像，可以用 `--no-lief`：
 
-DH 构建在 `processBinary()` 里命中缓存，不再调用 `prepare()`/LIEF，
-本地 LoongArch 与 CI（x86_64）行为一致，也不依赖 Python/LIEF。
-可以用 `--no-native-seed` 关闭该行为（此时构建机必须有可用的 LIEF）。
+1. `build-sqlitejdbc-loongarch.sh` 额外编译一个**编译期改号**的 so：
+   把 `NativeDB.c` / `NativeDB.h` 里的 `Java_org_sqlite_` 改成
+   `Java_dh_1sqlite_`，把 `FindClass` 用的 `"org/sqlite/..."` 改成
+   `"dh_sqlite/..."`，重新链接，让链接器生成正确的 `.gnu.hash`；
+2. `inject-so-into-dh-build.sh` 把它复制到
+   `relocate_natives/cache/dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so`；
+3. DH 构建命中缓存，跳过 `prepare()`/LIEF，完全不依赖 Python。
 
-该缓存文件属于构建产物，**不要提交**到 `loongarch-patch` 分支。
+两种模式都实机验证通过；差异只在“谁来重建 ELF 符号表”。
 
 **Fallback（未采用）**：解压 DH shadow jar → 替换 `OSInfo.class` + 新增 so →
 重新打包。该方式同样要自行完成上述 ELF 符号重写，否则 `System.load` 会因
@@ -247,7 +226,10 @@ JNI 符号名不匹配失败；而 Gradle 依赖替换能让 DH 自带流程完�
 4. 从 `gradle.properties` 读取 `sqlite_jdbc_version`，并校验补丁只改
    `OSInfo.java`；
 5. 调用 `build-dh-loongarch.sh --cross-prefix loongarch64-linux-gnu- --mc <ver>`：
-   交叉编译 so → 注入 → `./gradlew assemble mergeJars`（与本地同一套脚本，避免分叉）；
+   交叉编译 so → 注入 → `./gradlew assemble mergeJars`（与本地同一套脚本，避免分叉）。
+   native 重定位默认走 LIEF：x86_64 runner 上用 PyPI 的 `lief==0.16.2`
+   解析并重写交叉编译出的 LoongArch ELF（LIEF 与宿主架构无关，不需要 QEMU）；
+   需要 `python3-venv`；
 6. 上传 `loongarch/dist/*.jar`（artifact 名为
    `distanthorizons-loongarch-jars-<mc>`；设置 `DH_DIST_NAME_WITH_MC=1`，
    文件名带 `-mc<版本>`，中间产物 `-dev`/`-sources`/`-all` 等不上传）。
@@ -336,9 +318,10 @@ grep -iE "loongarch|sqlite|jdbc|UnsatisfiedLinkError|NativeLibraryNotFound" logs
   因此三个加载器需要两个 MC 目标（见 3 节与 4.2 节的上游编译修复）。
 - **首次构建很慢**：unimined 需要下载 Minecraft、mappings 与大量依赖；
   之后有 Gradle 缓存会快很多。
-- PyPI 上没有 LoongArch 的 `lief==0.16.2`，默认用预置 relocator 缓存绕过
-  LIEF（见 4.1）；需要走上游流程时用 `--use-lief`（龙芯镜像的 0.17.6 已验证）。
-  若上游改用 LIEF 的其它能力（例如重算签名/校验和），需要重新评估该做法。
+- LoongArch 上没有 `lief==0.16.2`，默认的 LIEF 模式在 loongarch64 上使用
+  龙芯镜像的 0.17.6（已验证与 DH 脚本兼容）；无镜像/无网络时用 `--no-lief`
+  回退（编译期改号 + 预置缓存，见 4.1）。
+  若上游改用 LIEF 的其它能力（例如重算签名/校验和），需要重新评估回退方案。
 - 构建产生的新缓存文件 `relocate_natives/cache/dh_sqlite/native/Linux/loongarch64/`
   属于构建产物，**不要提交**到 `loongarch-patch` 分支。
 
@@ -380,7 +363,9 @@ GCC 16.2.0、DH 3.3.4、sqlite-jdbc 3.53.2.1。
 | DH 产物内原生库 | 6 个 jar 全部包含 `dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so`，各 61 个 `Java_dh_1sqlite_*` 符号 |
 | **DH 重定位后的 JDBC 端到端测试**（直接加载产物 jar 中的 `dh_sqlite`） | 26.3 merged、1.20.1 forge 均输出 `ROW 1 overworld sqlite=3.53.2` / `DH_RELOCATED_JDBC_OK` |
 | `--use-lief`（龙芯镜像 lief 0.17.6）流程 | BUILD SUCCESSFUL；日志出现 `Relocating to dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so...`，产物 JDBC 测试同样通过 |
-| **用户实机测试**（MC 26.3 Fabric，Loongson 3A6000 + AMD RADV） | DH 3.3.4 正常加载；overworld / the_end / the_nether 三个 `DistantHorizons.sqlite` 共执行 72 次建表脚本；关闭时 `Closing all [3] databases...`，进程退出码 0；无 `UnsatisfiedLinkError` / `NativeLibraryNotFound` |
+| **用户实机测试**（默认方案，MC 26.3 Fabric，Loongson 3A6000 + AMD RADV） | DH 3.3.4 正常加载；overworld / the_end / the_nether 三个 `DistantHorizons.sqlite` 共执行 72 次建表脚本；`Closing all [3] databases...`，退出码 0；无 native 错误 |
+| **用户实机测试（LIEF 方案产物）** | DH 正常加载，3 个数据库正常打开/关闭，`Closing all [3] databases...`，退出码 0，无 `UnsatisfiedLinkError` / `NativeLibraryNotFound` |
+| LIEF 方案全量构建（`--all-loaders`） | 两个 MC 目标均 BUILD SUCCESSFUL；日志出现 `Relocating to dh_sqlite/native/...`；6 个产物的原生库均为 LIEF 重写结果（与编译期改号版本字节不同） |
 
 最终产物（`--all-loaders`，本机实测）：
 

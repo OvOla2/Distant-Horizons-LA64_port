@@ -22,7 +22,7 @@
 #   ./loongarch/scripts/build-dh-loongarch.sh --all-loaders   # 26.3.0 + 1.20.1
 #   MC_VERSIONS="26.3.0 1.20.1" ./loongarch/scripts/build-dh-loongarch.sh
 #   CROSS_PREFIX=loongarch64-linux-gnu- ./loongarch/scripts/build-dh-loongarch.sh  # CI
-#   ./loongarch/scripts/build-dh-loongarch.sh --use-lief   # 用 LIEF（需可用的 lief 版本）
+#   ./loongarch/scripts/build-dh-loongarch.sh --no-lief    # 回退：不依赖 LIEF（编译期改号 + 缓存预置）
 #
 # 说明：DH 每个 Minecraft 版本只声明两个加载器（1.20.1 = fabric+forge，
 # 26.x/1.21.x = fabric+neoforge），因此“三个加载器”需要两个 MC 目标，
@@ -55,6 +55,7 @@ while [ $# -gt 0 ]; do
         --no-patch)     EXTRA_SQLITE_ARGS+=(--no-patch); shift ;;
         --skip-sqlite)  SKIP_SQLITE=1; shift ;;
         --use-lief)     INJECT_ARGS+=(--use-lief); shift ;;
+        --no-lief)      INJECT_ARGS+=(--no-lief); shift ;;
         --clean)        GRADLE_EXTRA+=(clean); shift ;;
         -h|--help)      sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)              dh_die "未知参数: $1（用 --help 查看用法）" ;;
