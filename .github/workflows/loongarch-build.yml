@@ -1,0 +1,181 @@
+# ---------------------------------------------------------------------------
+# Distant Horizons - LoongArch64（loongarch64）自动构建
+#
+# 触发：
+#   - workflow_dispatch        手动触发（可指定 ref / MC 版本）
+#   - push 到 loongarch-patch  分支构建
+#   - push tag loongarch-v*    构建并发布 GitHub Release
+#
+# 关键点：
+#   - runner 为 ubuntu-24.04，交叉编译 LoongArch64，不使用 QEMU、不使用自托管 runner
+#   - 不配置任何代理（CI 直连）
+#   - sqlite-jdbc 版本从 gradle.properties 读取，不硬编码
+#   - DH 每个 MC 版本只声明两个加载器，矩阵同时覆盖
+#       26.3.0  -> fabric + neoforge
+#       1.20.1  -> fabric + forge
+#     合计覆盖 Fabric / Forge / NeoForge 三个加载器
+# ---------------------------------------------------------------------------
+name: LoongArch64 Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要构建的分支或 tag'
+        required: false
+        default: 'loongarch-patch'
+      mc_versions:
+        description: 'Minecraft 目标版本，空格分隔'
+        required: false
+        default: '26.3.0 1.20.1'
+  push:
+    branches:
+      - loongarch-patch
+    tags:
+      - 'loongarch-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: loongarch-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # CI 不需要代理（脚本默认在本地使用代理）
+  PROXY_URL: ''
+  DH_SKIP_GRADLE_PROXY: '1'
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 生成 MC 版本矩阵
+  # -------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      mc: ${{ steps.matrix.outputs.mc }}
+    steps:
+      - name: Build matrix
+        id: matrix
+        env:
+          MC_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mc_versions || '26.3.0 1.20.1' }}
+        run: |
+          set -euo pipefail
+          JSON=$(python3 -c 'import json,os,sys; print(json.dumps(os.environ["MC_INPUT"].split()))')
+          echo "mc=${JSON}" >> "$GITHUB_OUTPUT"
+          echo "MC matrix: ${JSON}"
+
+  # -------------------------------------------------------------------------
+  # 交叉编译 loongarch64 so + 构建 DH
+  # -------------------------------------------------------------------------
+  build-native-and-mod:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mc: ${{ fromJSON(needs.prepare.outputs.mc) }}
+    name: build-${{ matrix.mc }}
+    steps:
+      - name: Checkout (with core submodule)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up LoongArch64 cross toolchain
+        uses: maikebing/loongarch64-cross-compile@main
+
+      - name: Verify cross compiler
+        run: |
+          set -euo pipefail
+          command -v loongarch64-linux-gnu-gcc
+          loongarch64-linux-gnu-gcc -dumpmachine
+          echo "CROSS_COMPILE=${CROSS_COMPILE:-unset}"
+
+      - name: Read sqlite-jdbc version from gradle.properties
+        id: sqlite
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^[[:space:]]*sqlite_jdbc_version[[:space:]]*=[[:space:]]*//p' gradle.properties | tail -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "无法从 gradle.properties 读取 sqlite_jdbc_version" >&2
+            exit 1
+          fi
+          echo "sqlite-jdbc version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify patch matches pinned sqlite-jdbc version
+        run: |
+          set -euo pipefail
+          PATCH=loongarch/patches/sqlitejdbc-loongarch64.patch
+          test -s "$PATCH"
+          # 补丁必须只涉及 OSInfo.java
+          CHANGED=$(grep -E '^(\+\+\+|---) ' "$PATCH" | sed -E 's#^[+-]{3} [ab]/##' | sort -u | grep -v '^/dev/null$' || true)
+          echo "patch touches: $CHANGED"
+          [ "$CHANGED" = "src/main/java/org/sqlite/util/OSInfo.java" ] || {
+            echo "补丁修改了非预期文件" >&2; exit 1; }
+
+      - name: Install python venv (DH native relocation)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-venv zip
+
+      - name: Cross-compile sqlite-jdbc + build DH
+        env:
+          CROSS_PREFIX: loongarch64-linux-gnu-
+          MC_VER: ${{ matrix.mc }}
+        run: |
+          set -euo pipefail
+          ./loongarch/scripts/build-dh-loongarch.sh \
+            --cross-prefix loongarch64-linux-gnu- \
+            --mc "$MC_VER"
+
+      - name: Show produced jars
+        run: |
+          set -euo pipefail
+          ls -lh loongarch/dist/
+          # 断言：至少一个 jar，且都包含分架构的原生库目录（说明 shadow 成功）
+          test -n "$(find loongarch/dist -name '*.jar' -print -quit)"
+
+      - name: Upload jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: distanthorizons-loongarch-jars-${{ matrix.mc }}
+          path: loongarch/dist/*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+  # -------------------------------------------------------------------------
+  # tag 触发时发布 Release
+  # -------------------------------------------------------------------------
+  release:
+    if: startsWith(github.ref, 'refs/tags/loongarch-v')
+    needs: build-native-and-mod
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all jars
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: distanthorizons-loongarch-jars-*
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -lh dist/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.jar
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
