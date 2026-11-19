@@ -172,7 +172,7 @@ prepare_lief_venv() {
     python3 -m venv "$venv" \
         || dh_die "python3 -m venv 失败（缺少 python3-venv？）；可用 --no-lief 回退"
     # 注意：--index-url 是 install 子命令的选项，必须放在 install 之后
-    local pip_cmd=("$venv/bin/pip" -q --disable-pip-version-check install)
+    local pip_cmd=("$venv/bin/pip" -q --disable-pip-version-check --retries 5 --timeout 60 install)
     local index_args=()
     if [ -n "$LIEF_INDEX_URL" ]; then
         index_args=(--index-url "$LIEF_INDEX_URL")

@@ -200,11 +200,25 @@ fi
 rm -f "$SRC_DIR/target/common-lib/NativeDB.h"
 
 dh_info "执行 make native（OS_NAME=$OS_NAME OS_ARCH=$OS_ARCH${CROSS_PREFIX:+ CROSS_PREFIX=$CROSS_PREFIX}）"
+
+# make native 内部会从 sqlite.org 下载源码包，网络抖动时单次失败很常见；
+# 这里做有限次重试（make 是幂等的，会从中断处继续）。
+run_make_native() {
+    local attempt
+    for attempt in 1 2 3; do
+        if make -C "$SRC_DIR" "${MAKE_ARGS[@]}"; then
+            return 0
+        fi
+        dh_warn "make native 失败（第 $attempt/3 次），5 秒后重试..."
+        sleep 5
+    done
+    return 1
+}
 MAKE_ARGS=(native "OS_NAME=$OS_NAME" "OS_ARCH=$OS_ARCH" "SQLITE_FLAGS=$SQLITE_CFLAGS")
 if [ -n "$CROSS_PREFIX" ]; then
     MAKE_ARGS+=("CROSS_PREFIX=$CROSS_PREFIX")
 fi
-make -C "$SRC_DIR" "${MAKE_ARGS[@]}"
+run_make_native
 
 SO_FILE="$SRC_DIR/src/main/resources/org/sqlite/native/$OS_NAME/$OS_ARCH/libsqlitejdbc.so"
 [ -f "$SO_FILE" ] || dh_die "make native 未产出 $SO_FILE"
@@ -238,7 +252,7 @@ if [ -f "$NATIVE_DB_H" ]; then
     # C 代码里用字符串做 FindClass，需要同步改名
     sed -i 's#org/sqlite#dh_sqlite#g' "$NATIVE_DB_C"
 
-    make -C "$SRC_DIR" "${MAKE_ARGS[@]}"
+    run_make_native
     cp -f "$SO_FILE" "$RELOCATED_SO"
 
     # 还原源码，保持可重复构建

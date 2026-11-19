@@ -137,10 +137,29 @@ jobs:
           # 矩阵按 MC 版本并行，产物名必须带 MC 版本，避免 Release 中互相覆盖
           DH_DIST_NAME_WITH_MC: '1'
         run: |
-          set -euo pipefail
+          # 不直接用 -e：先拿到退出码，把失败日志尾部打成注解（公开可查，
+          # 便于没有仓库权限时定位问题），再以原退出码失败。
+          set -uo pipefail
           ./loongarch/scripts/build-dh-loongarch.sh \
             --cross-prefix loongarch64-linux-gnu- \
-            --mc "$MC_VER"
+            --mc "$MC_VER" 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::build failed (exit $rc), log tail:"
+            tail -n 15 build.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit "$rc"
+          fi
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.mc }}
+          path: build.log
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Show produced jars
         run: |
