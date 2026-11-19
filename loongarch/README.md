@@ -2,6 +2,7 @@
 
 [![LoongArch64 Build](https://github.com/OvOla2/Distant-Horizons-LA64_port/actions/workflows/loongarch-build.yml/badge.svg?branch=loongarch-patch)](https://github.com/OvOla2/Distant-Horizons-LA64_port/actions/workflows/loongarch-build.yml)
 [![GitHub repo](https://img.shields.io/badge/repo-OvOla2%2FDistant--Horizons--LA64__port-181717?logo=github)](https://github.com/OvOla2/Distant-Horizons-LA64_port)
+[![Release](https://img.shields.io/github/v/release/OvOla2/Distant-Horizons-LA64_port?label=release)](https://github.com/OvOla2/Distant-Horizons-LA64_port/releases/tag/loongarch-v3.3.4)
 
 本目录是 **Distant Horizons（DH）LoongArch64 移植**的全部构建资产：
 交叉/本机构建 sqlite-jdbc 的 LoongArch 原生库、使用 Gradle 依赖替换把
@@ -211,6 +212,9 @@ JNI 符号名不匹配失败；而 Gradle 依赖替换能让 DH 自带流程完�
 > run [#1](https://github.com/OvOla2/Distant-Horizons-LA64_port/actions/runs/44503225890)：
 > `build-26.3.0` 与 `build-1.20.1` 均 success，产物各约 75–77MB；
 > Release job 因无 tag 按预期跳过）。
+> 发版：tag `loongarch-v3.3.4` 的流水线通过，Release
+> [loongarch-v3.3.4](https://github.com/OvOla2/Distant-Horizons-LA64_port/releases/tag/loongarch-v3.3.4)
+> 已附上 6 个 jar（Fabric/Forge/NeoForge × MC 26.3.0/1.20.1）。
 
 工作流：`.github/workflows/loongarch-build.yml`
 
@@ -395,6 +399,8 @@ GCC 16.2.0、DH 3.3.4、sqlite-jdbc 3.53.2.1。
 | **用户实机测试**（默认方案，MC 26.3 Fabric，Loongson 3A6000 + AMD RADV） | DH 3.3.4 正常加载；overworld / the_end / the_nether 三个 `DistantHorizons.sqlite` 共执行 72 次建表脚本；`Closing all [3] databases...`，退出码 0；无 native 错误 |
 | **用户实机测试（LIEF 方案产物）** | DH 正常加载，3 个数据库正常打开/关闭，`Closing all [3] databases...`，退出码 0，无 `UnsatisfiedLinkError` / `NativeLibraryNotFound` |
 | **GitHub Actions 首次运行**（x86_64 交叉编译 + lief 0.16.2） | `build-26.3.0`、`build-1.20.1` 均 success；artifact 断言（每个 jar 含 loongarch64 so）通过 |
+| **tag 发版运行**（`loongarch-v3.3.4`） | build 两个矩阵 + release job 全部通过；Release 附 6 个 jar（约 22.5–27.7MB） |
+| **用户实机测试 CI 产物** | CI artifact 下载后正常加载使用 |
 | LIEF 方案全量构建（`--all-loaders`） | 两个 MC 目标均 BUILD SUCCESSFUL；日志出现 `Relocating to dh_sqlite/native/...`；6 个产物的原生库均为 LIEF 重写结果（与编译期改号版本字节不同） |
 
 最终产物（`--all-loaders`，本机实测）：
