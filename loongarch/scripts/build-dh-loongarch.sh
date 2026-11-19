@@ -104,6 +104,14 @@ dh_info "JAVA_HOME: $JAVA_HOME"
 # Gradle 守护进程参数：DH 默认 -Xmx4096M，这里不覆盖
 GRADLE_BASE=(--console=plain --stacktrace)
 
+# 显式告诉 Gradle 本机 JDK 位置：
+# foojay 在 loongarch64 上不可用，1.20.1（JDK 17）等目标需要本机已安装的 JDK。
+JDK_PATHS="$(dh_detect_jdk_paths)"
+if [ -n "$JDK_PATHS" ]; then
+    GRADLE_BASE+=("-Dorg.gradle.java.installations.paths=$JDK_PATHS")
+    dh_info "Gradle toolchain 候选 JDK: $JDK_PATHS"
+fi
+
 # ---------------------------------------------------------------------------
 # 1 + 2. sqlite-jdbc（so + jar）与注入
 # ---------------------------------------------------------------------------
@@ -134,6 +142,9 @@ MULTI_MC=0
 
 build_for_mc() {
     local mc="$1"
+    mkdir -p "$BUILD_DIR"
+    # 标记本次构建开始时间，collect_for_mc 用它排除残留产物
+    touch "$BUILD_DIR/.build-start-$mc"
     dh_info "步骤 3/4：./gradlew assemble mergeJars -PmcVer=$mc"
     ( cd "$DH_ROOT" && ./gradlew "${GRADLE_BASE[@]}" \
         --init-script "$INIT_SCRIPT" \
@@ -146,30 +157,63 @@ build_for_mc() {
 }
 
 collect_for_mc() {
-    local mc="$1" name_suffix="" dest_prefix
-    [ "$MULTI_MC" = "1" ] && name_suffix="-mc$mc"
+    local mc="$1" name_suffix=""
+    # 多个 MC 目标或 CI（矩阵按 MC 版本拆分）时必须带 MC 版本后缀，
+    # 否则不同 MC 版本的产物会同名覆盖。
+    if [ "$MULTI_MC" = "1" ] || [ "${DH_DIST_NAME_WITH_MC:-0}" = "1" ]; then
+        name_suffix="-mc$mc"
+    fi
 
-    local loader jar dest
-    for loader in fabric forge neoforge; do
-        local dir="$DH_ROOT/$loader/build/libs"
-        [ -d "$dir" ] || continue
-        # 过滤中间产物：sources/javadoc/dev/all/raw/unobf
-        jar="$(ls -t "$dir"/*.jar 2>/dev/null \
-            | grep -Ev -- '-(sources|javadoc|dev|all|raw|unobf|api)\.jar$' \
-            | head -n 1 || true)"
+    # 只收集该 MC 版本在 versionProperties 中声明的加载器，
+    # 避免把上一个 MC 目标残留的 build/libs 产物混进来。
+    local props="$DH_ROOT/versionProperties/$mc.properties"
+    [ -f "$props" ] || dh_die "找不到版本属性: $props"
+    local loaders
+    loaders="$(sed -n 's/^[[:space:]]*builds_for[[:space:]]*=[[:space:]]*//p' "$props" | tail -n 1 | tr ',' ' ')"
+    [ -n "$loaders" ] || dh_die "无法从 $props 读取 builds_for"
+
+    # 用时间戳标记区分“本次构建产物”和上一次 MC 目标的残留
+    local marker="$BUILD_DIR/.build-start-$mc"
+    local loader dir jar dest
+    for loader in $loaders; do
+        dir="$DH_ROOT/$loader/build/libs"
+        [ -d "$dir" ] || { dh_warn "跳过 $loader：目录不存在 $dir"; continue; }
+        jar=""
+        # 过滤中间产物（sources/javadoc/dev/all/raw/unobf/api），只取本次构建新生成的
+        for candidate in "$dir"/*.jar; do
+            [ -f "$candidate" ] || continue
+            case "$candidate" in
+                *-sources.jar|*-javadoc.jar|*-dev.jar|*-all.jar|*-raw.jar|*-unobf.jar|*-api.jar) continue ;;
+            esac
+            [ "$candidate" -nt "$marker" ] || continue
+            if [ -z "$jar" ] || [ "$candidate" -nt "$jar" ]; then
+                jar="$candidate"
+            fi
+        done
         if [ -n "$jar" ]; then
             dest="$DIST_DIR/DistantHorizons-$loader-$MOD_VERSION$name_suffix.jar"
             cp -f "$jar" "$dest"
             dh_ok "loader jar: $(basename "$dest")  <- $(basename "$jar")"
+        else
+            dh_warn "未找到 $loader 的新构建产物（$dir）"
         fi
     done
 
     # Forgix 合并产物（一个 jar 同时支持该 MC 版本的所有加载器）
-    local forgix_jar
-    forgix_jar="$(ls -t "$DH_ROOT"/build/forgix/*.jar 2>/dev/null | head -n 1 || true)"
+    local forgix_jar=""
+    for candidate in "$DH_ROOT"/build/forgix/*.jar; do
+        [ -f "$candidate" ] || continue
+        [ "$candidate" -nt "$marker" ] || continue
+        if [ -z "$forgix_jar" ] || [ "$candidate" -nt "$forgix_jar" ]; then
+            forgix_jar="$candidate"
+        fi
+    done
     if [ -n "$forgix_jar" ]; then
-        cp -f "$forgix_jar" "$DIST_DIR/DistantHorizons-merged-$MOD_VERSION$name_suffix.jar"
-        dh_ok "merged jar: $(basename "$DIST_DIR/DistantHorizons-merged-$MOD_VERSION$name_suffix.jar")  <- $(basename "$forgix_jar")"
+        dest="$DIST_DIR/DistantHorizons-merged-$MOD_VERSION$name_suffix.jar"
+        cp -f "$forgix_jar" "$dest"
+        dh_ok "merged jar: $(basename "$dest")  <- $(basename "$forgix_jar")"
+    else
+        dh_warn "未找到 Forgix 合并产物（$DH_ROOT/build/forgix/）"
     fi
 }
 

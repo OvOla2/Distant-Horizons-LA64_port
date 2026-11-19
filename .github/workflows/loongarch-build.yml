@@ -123,15 +123,17 @@ jobs:
           [ "$CHANGED" = "src/main/java/org/sqlite/util/OSInfo.java" ] || {
             echo "补丁修改了非预期文件" >&2; exit 1; }
 
-      - name: Install python venv (DH native relocation)
+      - name: Install build prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-venv zip
+          sudo apt-get install -y -qq zip
 
       - name: Cross-compile sqlite-jdbc + build DH
         env:
           CROSS_PREFIX: loongarch64-linux-gnu-
           MC_VER: ${{ matrix.mc }}
+          # 矩阵按 MC 版本并行，产物名必须带 MC 版本，避免 Release 中互相覆盖
+          DH_DIST_NAME_WITH_MC: '1'
         run: |
           set -euo pipefail
           ./loongarch/scripts/build-dh-loongarch.sh \

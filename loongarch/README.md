@@ -30,9 +30,11 @@ loongarch/
 .github/workflows/loongarch-build.yml     # CI：交叉编译 + 构建 + artifact/Release
 ```
 
-**DH 源码零改动**：注入通过 Gradle init script 完成，不改 `build.gradle` /
-`settings.gradle`，因此 `loongarch-patch` 分支只新增 `loongarch/` 与
-`.github/workflows/`，rebase 上游时不会与 DH 构建脚本冲突。
+**DH 构建脚本零改动**：注入通过 Gradle init script 完成，不改 `build.gradle` /
+`settings.gradle`，因此 `loongarch-patch` 分支相对 3.3.4 tag 只新增
+`loongarch/` 与 `.github/workflows/`，外加 **1 个文件 2 行**的上游编译 bug
+修复（`MinecraftGLWrapper.java`，见 4.2 节，产出 Forge jar 所必需），
+rebase 上游时不会与 DH 构建脚本冲突。
 
 ---
 
@@ -44,9 +46,12 @@ loongarch/
 | `gcc` / `make` | 本机编译 sqlite3 与 JNI | `sudo oma install gcc make` |
 | `perl` | sqlite-jdbc Makefile 注入扩展函数 | `sudo oma install perl` |
 | `unzip` / `zip` / `curl` / `git` | 下载源码、打包 jar | `sudo oma install unzip zip curl git` |
-| `python3` + `venv` | DH 的 native 重定位（LIEF） | `sudo oma install python3 python3-pip` |
+| `python3` + `venv` | 脚本辅助（缓存预置、版本解析） | `sudo oma install python3 python3-pip` |
 
-构建 MC 1.20.1（Forge）时 Gradle 会通过 foojay 自动下载 JDK 17，无需手工安装。
+构建 MC 1.20.1（Forge）需要 **JDK 17**：本机已安装的 JDK（如
+`/usr/lib/java-17`）会被脚本自动加入 Gradle 的 toolchain 候选路径。
+原因：DH 的 foojay 工具链解析器在 loongarch64 上不可用
+（`Service 'SystemInfo' is not available ... enabled=false`），无法自动下载。
 
 ---
 
@@ -77,8 +82,9 @@ export PROXY_URL="http://127.0.0.1:20171"
 | `DistantHorizons-forge-<modVer>.jar` | Forge 单加载器 jar（仅 MC ≤1.20.1） |
 | `DistantHorizons-merged-<modVer>.jar` | Forgix 合并产物（一次适配该 MC 版本的全部加载器，推荐直接安装） |
 
-同时构建多个 MC 版本时，文件名追加 `-mc<版本>`，例如
-`DistantHorizons-fabric-3.3.4-mc1.20.1.jar`，避免覆盖。
+同时构建多个 MC 版本时（`--all-loaders` 或 `MC_VERSIONS="..."`），文件名追加
+`-mc<版本>`，例如 `DistantHorizons-fabric-3.3.4-mc1.20.1.jar`，避免覆盖。
+CI 中通过 `DH_DIST_NAME_WITH_MC=1` 强制加后缀（矩阵按 MC 版本并行）。
 
 > 为什么需要两个 MC 版本：DH 的 `versionProperties/*.properties` 中
 > `builds_for` 每个版本只列两个加载器（1.20.1 = `fabric,forge`，
@@ -167,6 +173,27 @@ DH 构建在 `processBinary()` 里命中缓存，不再调用 `prepare()`/LIEF�
 JNI 符号名不匹配失败；而 Gradle 依赖替换能让 DH 自带流程完成路径重定位，
 因此作为唯一实现。
 
+### 4.2 DH 3.3.4 上游编译 bug（Forge 目标必需的最小修复）
+
+`loongarch-patch` 分支还包含一个**与 LoongArch 无关**的上游修复：
+
+```diff
+-        if (!trustGlStateManager())
++        if (runDirectGlCall())
+```
+
+位置：`common/src/main/java/com/seibel/distanthorizons/common/wrappers/minecraft/MinecraftGLWrapper.java`
+（`enableBlend()` / `disableBlend()` 的 `MC_VER <= MC_26_1_2` 分支，2 处）。
+
+原因：3.3.4 tag 里这两处调用了**不存在的方法** `trustGlStateManager()`，
+导致所有 `MC_VER <= 26.1.2` 的目标（1.20.1、1.21.x 等）在
+`:common:compileJava` 直接编译失败；26.3.0 走 `#else` 分支所以不受影响。
+上游 `main` 已把这两处改为 `runDirectGlCall()`，此处按上游写法同步。
+
+影响：这是产出 **Forge** jar 的前提（Forge 只存在于 ≤1.20.1 的版本属性中）。
+它不改变 LoongArch 相关逻辑；后续 rebase 到上游已修复的 tag 时，该 commit
+会变成空提交，可以安全丢弃（`git rebase` 时会提示）。
+
 ---
 
 ## 5. CI（GitHub Actions）
@@ -191,8 +218,9 @@ JNI 符号名不匹配失败；而 Gradle 依赖替换能让 DH 自带流程完�
    `OSInfo.java`；
 5. 调用 `build-dh-loongarch.sh --cross-prefix loongarch64-linux-gnu- --mc <ver>`：
    交叉编译 so → 注入 → `./gradlew assemble mergeJars`（与本地同一套脚本，避免分叉）；
-6. 上传 `loongarch/dist/*.jar`（命名为 `distanthorizons-loongarch-jars-<mc>`，
-   中间产物 `-dev`/`-sources`/`-all` 等不上传）。
+6. 上传 `loongarch/dist/*.jar`（artifact 名为
+   `distanthorizons-loongarch-jars-<mc>`；设置 `DH_DIST_NAME_WITH_MC=1`，
+   文件名带 `-mc<版本>`，中间产物 `-dev`/`-sources`/`-all` 等不上传）。
 
 **Job 2 `release`**（仅 `loongarch-v*` tag）
 
@@ -250,8 +278,9 @@ grep -iE "loongarch|sqlite|jdbc|UnsatisfiedLinkError|NativeLibraryNotFound" logs
 - **GLIBC**：CI 交叉工具链基于 glibc 2.42；目标机 glibc 更旧时会出现
   `GLIBC_2.42 not found`，此时请在本机运行
   `./loongarch/scripts/build-dh-loongarch.sh`（用本机 glibc）。
-- **Forge**：DH 3.3.4 只在 MC ≤1.20.1 声明 Forge；26.x 上游注释为
-  “forge is broken due to gradle/build script issues”，无法在同一次构建中产出 Forge。
+- **Forge**：DH 3.3.4 只在 MC ≤1.20.1 声明 Forge（`versionProperties/1.20.1.properties`），
+  26.x 上游注释为 “forge is broken due to gradle/build script issues”，
+  因此三个加载器需要两个 MC 目标（见 3 节与 4.2 节的上游编译修复）。
 - **首次构建很慢**：unimined 需要下载 Minecraft、mappings 与大量依赖；
   之后有 Gradle 缓存会快很多。
 - 由于 LoongArch 上没有 `lief==0.16.2`，本方案用预置 relocator 缓存的方式
@@ -269,7 +298,8 @@ git fetch origin                    # 或 git fetch upstream
 git checkout main && git pull       # main 跟踪上游
 git checkout loongarch-patch
 git rebase <新的上游正式版 tag>       # 例：git rebase 3.3.4
-# 冲突只可能出现在 loongarch/ 与 .github/（DH 源码零改动，通常无冲突）
+# 冲突可能出现在 loongarch/、.github/ 与 4.2 节的 2 行上游修复
+# （若新 tag 已包含上游修复，该 commit 会被 rebase 自动丢弃）
 git push --force-with-lease origin loongarch-patch
 
 # 若 sqlite-jdbc 版本变化：
@@ -284,5 +314,42 @@ rm -rf loongarch/.build/sqlite-jdbc-src
 
 ## 9. 本机验证记录
 
-见本仓库根目录 `loongarch/README.md` 的“验证记录”一节（构建完成后补充实际
-产物名与 JDBC 冒烟测试输出）。
+验证环境：AOSC OS for LoongArch（loongarch64）、OpenJDK 25.0.2、
+GCC 16.2.0、DH 3.3.4、sqlite-jdbc 3.53.2.1。
+
+| 验证项 | 结果 |
+| --- | --- |
+| `OSInfo.getNativeLibFolderPathForCurrentOS()`（未打补丁） | `Linux/loongarch64` |
+| 用本机 gcc 构建 `libsqlitejdbc.so` | ELF 64-bit LSB shared object, LoongArch；`readelf` Machine = LoongArch |
+| sqlite-jdbc jar（含 so + 补丁 OSInfo）独立 JDBC 测试 | `ROW 1 loongarch sqlite=3.53.2` / `JDBC_OK` |
+| DH `assemble` + `mergeJars`（MC 26.3.0） | BUILD SUCCESSFUL；fabric/neoforge/merged jar |
+| DH `assemble` + `mergeJars`（MC 1.20.1） | BUILD SUCCESSFUL；fabric/forge/merged jar（依赖 4.2 的上游修复） |
+| DH 产物内原生库 | 6 个 jar 全部包含 `dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so`，各 61 个 `Java_dh_1sqlite_*` 符号 |
+| **DH 重定位后的 JDBC 端到端测试**（直接加载产物 jar 中的 `dh_sqlite`） | 26.3 merged、1.20.1 forge 均输出 `ROW 1 overworld sqlite=3.53.2` / `DH_RELOCATED_JDBC_OK` |
+
+最终产物（`--all-loaders`，本机实测）：
+
+```
+DistantHorizons-fabric-3.3.4-mc26.3.0.jar
+DistantHorizons-neoforge-3.3.4-mc26.3.0.jar
+DistantHorizons-merged-3.3.4-mc26.3.0.jar
+DistantHorizons-fabric-3.3.4-mc1.20.1.jar
+DistantHorizons-forge-3.3.4-mc1.20.1.jar
+DistantHorizons-merged-3.3.4-mc1.20.1.jar
+```
+
+端到端测试方法（不需要启动 Minecraft，可在目标机复现）：
+
+```bash
+unzip -o DistantHorizons-fabric-3.3.4.jar \
+  dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so -d /tmp/dh-native
+python3 - <<'PY'
+import ctypes
+lib = ctypes.CDLL("/tmp/dh-native/dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so")
+assert hasattr(lib, "Java_dh_1sqlite_core_NativeDB__1open_1utf8")
+print("relocated JNI symbol OK")
+PY
+```
+
+该测试同时验证了：shadow 重定位后的类名、编译期改名的 JNI 符号、
+ELF `.gnu.hash`、以及 LoongArch 上的实际 SQL 执行。

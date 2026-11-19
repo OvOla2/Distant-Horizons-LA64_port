@@ -176,6 +176,28 @@ dh_configure_gradle_proxy() {
 # ---------------------------------------------------------------------------
 dh_abs_path() { ( cd "$(dirname "$1")" && printf '%s/%s\n' "$(pwd)" "$(basename "$1")" ); }
 
+# 收集本机已安装的 JDK 目录，供 Gradle toolchain 使用。
+# 背景：DH 的 foojay 解析器在 loongarch64 上不可用，构建 1.20.1（需要 JDK 17）
+# 时必须显式告知 Gradle 本机 JDK 位置，否则报 ToolchainProvisioningException。
+dh_detect_jdk_paths() {
+    local dirs=() d
+    local -a candidates=(
+        /usr/lib/java-*
+        /usr/lib/jvm/*
+        /opt/java/*
+        "${HOME:-/root}"/.sdkman/candidates/java/*
+        "${HOME:-/root}"/.jdks/*
+    )
+    shopt -s nullglob
+    for d in "${candidates[@]}"; do
+        if [ -x "$d/bin/javac" ] && [ -x "$d/bin/java" ]; then
+            dirs+=("$d")
+        fi
+    done
+    shopt -u nullglob
+    ( IFS=,; printf '%s' "${dirs[*]}" )
+}
+
 dh_mkdir() { mkdir -p "$1"; }
 
 # 校验 jar 中是否包含指定 entry
