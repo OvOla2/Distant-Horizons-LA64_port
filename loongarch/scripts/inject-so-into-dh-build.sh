@@ -11,9 +11,15 @@
 #   relocate_natives/cache/dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so
 #                                           预置 relocator 缓存（构建产物，不要提交）
 #
-# 关于第 3 步：LoongArch 上无法安装 DH 固定的 lief==0.16.2，因此本脚本
-# 用与 DH 完全相同的字符串替换算法预先生成重定位后的 so，使 DH 构建
-# 直接命中缓存、跳过 LIEF。CI（x86_64）同样走这一步，以保持一致。
+# 关于第 3 步：PyPI 没有 LoongArch 的 lief==0.16.2（DH 的固定版本），
+# 因此默认用“编译期改号 + 预置 relocator 缓存”的方式跳过 LIEF。
+# 如果构建机有可用的 LIEF（例如龙芯镜像的 lief 0.17.x），可以加
+# --use-lief 改走 DH 上游自己的重定位流程（会自动创建
+# relocate_natives/.venv，DH 的 prepare() 检测到后就不再 pip install）。
+#
+# 龙芯 PyPI 镜像（可提供 loongarch64 lief wheel，0.17.4+）：
+#   --lief-index-url https://mirrors.loong64.com/pypi/simple
+# 注意：该镜像可能需要直连（走代理时可能连不上）。
 #
 # 代理（仅本地需要）：
 #   export PROXY_URL="http://127.0.0.1:20171"   # 默认值
@@ -23,6 +29,9 @@
 #   ./loongarch/scripts/inject-so-into-dh-build.sh --jar /path/to/sqlite-jdbc-3.53.2.1-loongarch.jar
 #   ./loongarch/scripts/inject-so-into-dh-build.sh --verify
 #   ./loongarch/scripts/inject-so-into-dh-build.sh --no-native-seed   # 不预置 relocator 缓存
+#   ./loongarch/scripts/inject-so-into-dh-build.sh --use-lief         # 走上游 LIEF 重定位
+#   LIEF_INDEX_URL=https://mirrors.loong64.com/pypi/simple \
+#     ./loongarch/scripts/inject-so-into-dh-build.sh --use-lief
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -40,6 +49,13 @@ VERIFY=0
 JAR_PATH=""
 SEED_NATIVE=1
 SO_PATH=""
+USE_LIEF=0
+LIEF_VERSION="${LIEF_VERSION:-0.17.6}"
+LIEF_INDEX_URL="${LIEF_INDEX_URL:-}"
+if [ -z "$LIEF_INDEX_URL" ] && [ "$(uname -m 2>/dev/null || true)" = "loongarch64" ]; then
+    # 龙芯镜像提供 loongarch64 的 lief wheel（0.17.4+）
+    LIEF_INDEX_URL="https://mirrors.loong64.com/pypi/simple"
+fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -48,7 +64,10 @@ while [ $# -gt 0 ]; do
         --verify)  VERIFY=1; shift ;;
         --so)      SO_PATH="${2:?--so 需要参数}"; shift 2 ;;
         --no-native-seed) SEED_NATIVE=0; shift ;;
-        -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --use-lief)       USE_LIEF=1; SEED_NATIVE=0; shift ;;
+        --lief-version)   LIEF_VERSION="${2:?--lief-version 需要参数}"; shift 2 ;;
+        --lief-index-url) LIEF_INDEX_URL="${2:?--lief-index-url 需要参数}"; shift 2 ;;
+        -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)         dh_die "未知参数: $1" ;;
     esac
 done
@@ -123,6 +142,53 @@ cat > "$DEST_DIR/sqlite-jdbc-$PATCHED_VERSION.pom" <<EOF
 EOF
 
 dh_ok "已写入本地 Maven 仓库: $DEST_DIR"
+
+# ---------------------------------------------------------------------------
+# 2.5 可选：准备 LIEF venv（走上游重定位流程）
+#
+# DH 的 NativeRelocator.prepare() 会先检查 relocate_natives/.venv：
+# 只要 .venv/bin/python 能 import lief，就跳过 pip install。
+# 因此这里直接建好 venv，DH 构建就会用它自己的 fix_modified_binary.py。
+# ---------------------------------------------------------------------------
+prepare_lief_venv() {
+    local venv="$DH_ROOT/relocate_natives/.venv"
+    command -v python3 >/dev/null 2>&1 || dh_die "需要 python3 来创建 LIEF venv"
+    if [ -x "$venv/bin/python" ] && "$venv/bin/python" -c 'import lief' >/dev/null 2>&1; then
+        dh_info "复用已有 LIEF venv: $venv"
+        return 0
+    fi
+    dh_info "创建 LIEF venv（lief==$LIEF_VERSION，index: ${LIEF_INDEX_URL:-PyPI}）"
+    python3 -m venv "$venv" \
+        || dh_die "python3 -m venv 失败（缺少 python3-venv？）"
+    # 注意：--index-url 是 install 子命令的选项，必须放在 install 之后
+    local pip_cmd=("$venv/bin/pip" -q --disable-pip-version-check install)
+    local index_args=()
+    if [ -n "$LIEF_INDEX_URL" ]; then
+        index_args=(--index-url "$LIEF_INDEX_URL")
+    fi
+    # 龙芯镜像通常需要直连（走代理会连不上），pip 时单独去掉代理变量
+    case "$LIEF_INDEX_URL" in
+    *mirrors.loong64.com*)
+        env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+            "${pip_cmd[@]}" "${index_args[@]}" "lief==$LIEF_VERSION" "requests>=2.32" \
+            || dh_die "安装 lief==$LIEF_VERSION 失败（镜像上可能没有该版本）"
+        ;;
+    *)
+        "${pip_cmd[@]}" "${index_args[@]}" "lief==$LIEF_VERSION" "requests>=2.32" \
+            || dh_die "安装 lief==$LIEF_VERSION 失败（镜像上可能没有该版本）"
+        ;;
+    esac
+    "$venv/bin/python" -c 'import lief' \
+        || dh_die "LIEF venv 创建后仍无法 import lief"
+    dh_ok "LIEF venv 就绪: $venv ($("$venv/bin/python" -c 'import lief;print(lief.__version__)'))"
+}
+
+if [ "$USE_LIEF" = "1" ]; then
+    prepare_lief_venv
+    # 删掉之前预置的缓存，强制 DH 走 processBinary() -> LIEF
+    rm -f "$DH_ROOT/relocate_natives/cache/dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so"
+    dh_info "已清空预置缓存，DH 构建将使用 LIEF 重定位"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. 预置 DH 的 native 重定位缓存（绕过 LIEF）

@@ -103,6 +103,8 @@ CI 中通过 `DH_DIST_NAME_WITH_MC=1` 强制加后缀（矩阵按 MC 版本并�
 
 # 注册到本地 Maven 仓库并生成注入配置
 ./loongarch/scripts/inject-so-into-dh-build.sh [--verify]
+# 改走上游 LIEF 重定位（需要可用的 lief，见 4.1）：
+./loongarch/scripts/inject-so-into-dh-build.sh --use-lief
 
 # 手动构建（与脚本等价）
 ./gradlew --init-script loongarch/scripts/dh-loongarch-init.gradle \
@@ -132,8 +134,33 @@ CI 中通过 `DH_DIST_NAME_WITH_MC=1` 强制加后缀（矩阵按 MC 版本并�
 
 DH 的 `NativeTransformer` 在改动 ELF 符号后会用 LIEF（`lief==0.16.2`）重写
 二进制，并且只有在 `relocate_natives/cache/` 未命中时才会创建 venv 并
-`pip install`。而 PyPI 上 **lief 0.16.2 没有 loongarch64 分发包**（只有
-x86_64/aarch64 wheel；0.17.x 的源码构建在 LoongArch 上也会失败）。
+`pip install`。**PyPI 上没有 lief 0.16.2 的 loongarch64 分发包**（只有
+x86_64/aarch64 wheel，源码构建也失败）。
+
+不过龙芯 PyPI 镜像提供 **lief 0.17.4 / 0.17.5 / 0.17.6 / 1.0.0** 的
+loongarch64 wheel：
+
+```bash
+pip install --extra-index-url https://mirrors.loong64.com/pypi/simple lief==0.17.6
+```
+
+实测 **0.17.6 与 DH 的 `fix_modified_binary.py` 兼容**：对裸替换后的 so
+做 `lief.parse` + `binary.write` 后，`nm -D` 与 `dlsym` 都能解析改名后的
+`Java_dh_1sqlite_*` 符号。因此有两种模式：
+
+| 模式 | 开关 | 依赖 | 说明 |
+| --- | --- | --- | --- |
+| 默认：编译期改号 + 预置缓存 | （默认） | 无 | 不依赖 Python/LIEF，本地/CI 行为一致，已实机验证 |
+| 上游 LIEF 流程 | `--use-lief` | 可用的 lief（默认 0.17.6） | 自动创建 `relocate_natives/.venv`，DH 的 prepare() 检测到后跳过 pip，由 DH 自己完成重定位 |
+
+`--use-lief` 示例（镜像需要直连，脚本已对 `mirrors.loong64.com` 自动绕过代理）：
+
+```bash
+./loongarch/scripts/build-dh-loongarch.sh --use-lief
+# 或单独执行：
+./loongarch/scripts/inject-so-into-dh-build.sh --use-lief \
+  --lief-index-url https://mirrors.loong64.com/pypi/simple
+```
 
 **关键点**：在成品 `.so` 上直接做字符串替换是**不可行**的 —— ELF 的
 `.gnu.hash`/`.dynsym` 仍指向旧名字，`dlsym("Java_dh_1sqlite_...")` 会失败，
@@ -198,6 +225,9 @@ JNI 符号名不匹配失败；而 Gradle 依赖替换能让 DH 自带流程完�
 
 ## 5. CI（GitHub Actions）
 
+> **状态：已编写，暂缓启用**（截至 2026-11，尚未在真实 runner 上跑过；
+> 本地构建与实机测试已通过）。
+
 工作流：`.github/workflows/loongarch-build.yml`
 
 **触发**
@@ -233,6 +263,29 @@ CI 中**不配置代理**（workflow 里 `PROXY_URL: ''`），也不使用 QEMU 
 ```bash
 git tag loongarch-v3.3.4 && git push origin loongarch-v3.3.4
 ```
+
+### 5.1 托管到 GitHub（上游仍在 GitLab）
+
+本地 clone 的 `origin` 目前指向 GitLab 上游
+（`distant-horizons-team/distant-horizons`）。若要把移植发布到 GitHub
+（GitHub 放 fork/发布页，GitLab 只作为 upstream）：
+
+```bash
+# 1. 把 GitLab 上游改名为 upstream
+git remote rename origin upstream
+
+# 2. 在 GitHub 新建空仓库后（不要勾选初始化 README），添加 origin
+git remote add origin git@github.com:<你的账号>/<仓库名>.git
+
+# 3. 推送主分支与补丁分支
+git push -u origin main loongarch-patch
+```
+
+- GitHub Actions 可直接使用本仓库的 `.github/workflows/loongarch-build.yml`
+  （CI 暂缓启用，见上文状态说明）。
+- `.gitmodules` 指向 GitLab 的公共 core 仓库，GitHub runner 拉取子模块无需额外配置。
+- 不想公开完整 `main` 镜像时，可以只推送 `loongarch-patch`
+  （CI 的 checkout 也只需要该分支）。
 
 ---
 
@@ -283,9 +336,9 @@ grep -iE "loongarch|sqlite|jdbc|UnsatisfiedLinkError|NativeLibraryNotFound" logs
   因此三个加载器需要两个 MC 目标（见 3 节与 4.2 节的上游编译修复）。
 - **首次构建很慢**：unimined 需要下载 Minecraft、mappings 与大量依赖；
   之后有 Gradle 缓存会快很多。
-- 由于 LoongArch 上没有 `lief==0.16.2`，本方案用预置 relocator 缓存的方式
-  绕过 LIEF（见 4.1）。若上游改用 LIEF 的其它能力（例如重算签名/校验和），
-  需要重新评估该做法。
+- PyPI 上没有 LoongArch 的 `lief==0.16.2`，默认用预置 relocator 缓存绕过
+  LIEF（见 4.1）；需要走上游流程时用 `--use-lief`（龙芯镜像的 0.17.6 已验证）。
+  若上游改用 LIEF 的其它能力（例如重算签名/校验和），需要重新评估该做法。
 - 构建产生的新缓存文件 `relocate_natives/cache/dh_sqlite/native/Linux/loongarch64/`
   属于构建产物，**不要提交**到 `loongarch-patch` 分支。
 
@@ -326,6 +379,8 @@ GCC 16.2.0、DH 3.3.4、sqlite-jdbc 3.53.2.1。
 | DH `assemble` + `mergeJars`（MC 1.20.1） | BUILD SUCCESSFUL；fabric/forge/merged jar（依赖 4.2 的上游修复） |
 | DH 产物内原生库 | 6 个 jar 全部包含 `dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so`，各 61 个 `Java_dh_1sqlite_*` 符号 |
 | **DH 重定位后的 JDBC 端到端测试**（直接加载产物 jar 中的 `dh_sqlite`） | 26.3 merged、1.20.1 forge 均输出 `ROW 1 overworld sqlite=3.53.2` / `DH_RELOCATED_JDBC_OK` |
+| `--use-lief`（龙芯镜像 lief 0.17.6）流程 | BUILD SUCCESSFUL；日志出现 `Relocating to dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so...`，产物 JDBC 测试同样通过 |
+| **用户实机测试**（MC 26.3 Fabric，Loongson 3A6000 + AMD RADV） | DH 3.3.4 正常加载；overworld / the_end / the_nether 三个 `DistantHorizons.sqlite` 共执行 72 次建表脚本；关闭时 `Closing all [3] databases...`，进程退出码 0；无 `UnsatisfiedLinkError` / `NativeLibraryNotFound` |
 
 最终产物（`--all-loaders`，本机实测）：
 

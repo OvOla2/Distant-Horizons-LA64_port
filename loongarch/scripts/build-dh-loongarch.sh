@@ -22,6 +22,7 @@
 #   ./loongarch/scripts/build-dh-loongarch.sh --all-loaders   # 26.3.0 + 1.20.1
 #   MC_VERSIONS="26.3.0 1.20.1" ./loongarch/scripts/build-dh-loongarch.sh
 #   CROSS_PREFIX=loongarch64-linux-gnu- ./loongarch/scripts/build-dh-loongarch.sh  # CI
+#   ./loongarch/scripts/build-dh-loongarch.sh --use-lief   # 用 LIEF（需可用的 lief 版本）
 #
 # 说明：DH 每个 Minecraft 版本只声明两个加载器（1.20.1 = fabric+forge，
 # 26.x/1.21.x = fabric+neoforge），因此“三个加载器”需要两个 MC 目标，
@@ -41,6 +42,7 @@ INIT_SCRIPT="$LOONGARCH_DIR/scripts/dh-loongarch-init.gradle"
 
 CROSS_PREFIX="${CROSS_PREFIX:-}"
 EXTRA_SQLITE_ARGS=()
+INJECT_ARGS=()
 SKIP_SQLITE=0
 GRADLE_EXTRA=()
 MC_LIST=()
@@ -52,6 +54,7 @@ while [ $# -gt 0 ]; do
         --cross-prefix) CROSS_PREFIX="${2:?--cross-prefix 需要参数}"; shift 2 ;;
         --no-patch)     EXTRA_SQLITE_ARGS+=(--no-patch); shift ;;
         --skip-sqlite)  SKIP_SQLITE=1; shift ;;
+        --use-lief)     INJECT_ARGS+=(--use-lief); shift ;;
         --clean)        GRADLE_EXTRA+=(clean); shift ;;
         -h|--help)      sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)              dh_die "未知参数: $1（用 --help 查看用法）" ;;
@@ -127,7 +130,7 @@ else
 fi
 
 dh_info "步骤 2/4：注入到 DH 构建（Gradle 依赖替换）"
-"$SCRIPT_DIR/inject-so-into-dh-build.sh"
+"$SCRIPT_DIR/inject-so-into-dh-build.sh" "${INJECT_ARGS[@]}"
 
 # shellcheck disable=SC1090
 source "$BUILD_DIR/gradle-inject.env"
