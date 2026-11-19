@@ -144,8 +144,16 @@ jobs:
         run: |
           set -euo pipefail
           ls -lh loongarch/dist/
-          # 断言：至少一个 jar，且都包含分架构的原生库目录（说明 shadow 成功）
           test -n "$(find loongarch/dist -name '*.jar' -print -quit)"
+          # 断言：每个 jar 都带上了 loongarch64 原生库（说明 shadow 重定位成功）
+          for j in loongarch/dist/*.jar; do
+            if unzip -l "$j" | grep -F "dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so" >/dev/null; then
+              echo "OK  $j"
+            else
+              echo "缺少 loongarch64 原生库: $j" >&2
+              exit 1
+            fi
+          done
 
       - name: Upload jars
         uses: actions/upload-artifact@v4
