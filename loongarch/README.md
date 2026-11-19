@@ -1,5 +1,8 @@
 # Distant Horizons × LoongArch64（loongarch64）移植构建
 
+[![LoongArch64 Build](https://github.com/OvOla2/Distant-Horizons-LA64_port/actions/workflows/loongarch-build.yml/badge.svg?branch=loongarch-patch)](https://github.com/OvOla2/Distant-Horizons-LA64_port/actions/workflows/loongarch-build.yml)
+[![GitHub repo](https://img.shields.io/badge/repo-OvOla2%2FDistant--Horizons--LA64__port-181717?logo=github)](https://github.com/OvOla2/Distant-Horizons-LA64_port)
+
 本目录是 **Distant Horizons（DH）LoongArch64 移植**的全部构建资产：
 交叉/本机构建 sqlite-jdbc 的 LoongArch 原生库、使用 Gradle 依赖替换把
 带 `loongarch64` 原生库的 sqlite-jdbc 注入 DH 构建、产出 Fabric / Forge /
@@ -204,8 +207,10 @@ JNI 符号名不匹配失败；而 Gradle 依赖替换能让 DH 自带流程完�
 
 ## 5. CI（GitHub Actions）
 
-> **状态：已编写，暂缓启用**（截至 2026-11，尚未在真实 runner 上跑过；
-> 本地构建与实机测试已通过）。
+> **状态：已启用**。首次 push 触发的运行已通过（2026-11-19，
+> run [#1](https://github.com/OvOla2/Distant-Horizons-LA64_port/actions/runs/44503225890)：
+> `build-26.3.0` 与 `build-1.20.1` 均 success，产物各约 75–77MB；
+> Release job 因无 tag 按预期跳过）。
 
 工作流：`.github/workflows/loongarch-build.yml`
 
@@ -248,15 +253,15 @@ git tag loongarch-v3.3.4 && git push origin loongarch-v3.3.4
 
 ### 5.1 发布到 GitHub（一次性落地步骤）
 
-上游仍在 GitLab；GitHub 只作为 fork / 发布页。假设仓库为
-`https://github.com/<owner>/<repo>`：
+上游仍在 GitLab；GitHub 只作为 fork / 发布页。当前仓库：
+`https://github.com/OvOla2/Distant-Horizons-LA64_port`。
 
 ```bash
 # 1. 网页新建 Public 空仓库（不要勾选 README / .gitignore / license）
 
 # 2. 本地：GitLab 上游改名 upstream（main 会自动继续跟踪 upstream/main）
 git remote rename origin upstream
-git remote add origin https://github.com/<owner>/<repo>.git
+git remote add origin https://github.com/OvOla2/Distant-Horizons-LA64_port.git
 
 # 3. 推送分支（loongarch-patch 设为 GitHub 默认分支）
 git push -u origin loongarch-patch
@@ -389,6 +394,7 @@ GCC 16.2.0、DH 3.3.4、sqlite-jdbc 3.53.2.1。
 | `--use-lief`（龙芯镜像 lief 0.17.6）流程 | BUILD SUCCESSFUL；日志出现 `Relocating to dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so...`，产物 JDBC 测试同样通过 |
 | **用户实机测试**（默认方案，MC 26.3 Fabric，Loongson 3A6000 + AMD RADV） | DH 3.3.4 正常加载；overworld / the_end / the_nether 三个 `DistantHorizons.sqlite` 共执行 72 次建表脚本；`Closing all [3] databases...`，退出码 0；无 native 错误 |
 | **用户实机测试（LIEF 方案产物）** | DH 正常加载，3 个数据库正常打开/关闭，`Closing all [3] databases...`，退出码 0，无 `UnsatisfiedLinkError` / `NativeLibraryNotFound` |
+| **GitHub Actions 首次运行**（x86_64 交叉编译 + lief 0.16.2） | `build-26.3.0`、`build-1.20.1` 均 success；artifact 断言（每个 jar 含 loongarch64 so）通过 |
 | LIEF 方案全量构建（`--all-loaders`） | 两个 MC 目标均 BUILD SUCCESSFUL；日志出现 `Relocating to dh_sqlite/native/...`；6 个产物的原生库均为 LIEF 重写结果（与编译期改号版本字节不同） |
 
 最终产物（`--all-loaders`，本机实测）：
