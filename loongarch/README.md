@@ -246,30 +246,54 @@ CI 中**不配置代理**（workflow 里 `PROXY_URL: ''`），也不使用 QEMU 
 git tag loongarch-v3.3.4 && git push origin loongarch-v3.3.4
 ```
 
-### 5.1 托管到 GitHub（上游仍在 GitLab）
+### 5.1 发布到 GitHub（一次性落地步骤）
 
-本地 clone 的 `origin` 目前指向 GitLab 上游
-（`distant-horizons-team/distant-horizons`）。若要把移植发布到 GitHub
-（GitHub 放 fork/发布页，GitLab 只作为 upstream）：
+上游仍在 GitLab；GitHub 只作为 fork / 发布页。假设仓库为
+`https://github.com/<owner>/<repo>`：
 
 ```bash
-# 1. 把 GitLab 上游改名为 upstream
+# 1. 网页新建 Public 空仓库（不要勾选 README / .gitignore / license）
+
+# 2. 本地：GitLab 上游改名 upstream（main 会自动继续跟踪 upstream/main）
 git remote rename origin upstream
+git remote add origin https://github.com/<owner>/<repo>.git
 
-# 2. 在 GitHub 新建空仓库后（不要勾选初始化 README），添加 origin
-git remote add origin git@github.com:<你的账号>/<仓库名>.git
+# 3. 推送分支（loongarch-patch 设为 GitHub 默认分支）
+git push -u origin loongarch-patch
+git push origin main          # 不带 -u：main 仍跟踪 upstream/main
 
-# 3. 推送主分支与补丁分支
-git push -u origin main loongarch-patch
+# 4. 网页 Settings → General → Default branch → loongarch-patch
 ```
 
-- GitHub Actions 可直接使用本仓库的 `.github/workflows/loongarch-build.yml`
-  （CI 暂缓启用，见上文状态说明）。
-- `.gitmodules` 指向 GitLab 的公共 core 仓库，GitHub runner 拉取子模块无需额外配置。
-- 不想公开完整 `main` 镜像时，可以只推送 `loongarch-patch`
-  （CI 的 checkout 也只需要该分支）。
+**首次 CI 验证**
 
----
+push `loongarch-patch` 会自动触发一次构建（只有 tag 才会发 Release，
+所以这次只是验证）。也可以在 Actions → *LoongArch64 Build* →
+*Run workflow* 手动选择分支与 MC 版本。
+
+如果希望**首次只手工触发**：先 Settings → Actions → General →
+Disable actions，push 后再启用，然后 Run workflow。
+
+首次运行较慢（下载交叉工具链、Minecraft、JDK 17、lief），重点检查：
+
+- `Relocating to dh_sqlite/native/Linux/loongarch64/libsqlitejdbc.so...`
+- artifact 断言步骤（每个 jar 必须含该 so）
+- 1.20.1 任务里 JDK 17 的自动下载是否成功（x86_64 上 foojay 可用）
+
+**发布 Release**
+
+首次 CI 通过后：
+
+```bash
+git tag loongarch-v3.3.4
+git push origin loongarch-v3.3.4
+```
+
+`release` job 会下载全部 matrix artifact，并把 6 个 jar 附加到同名 tag 的
+GitHub Release。
+
+> 注意：`main` 只是上游镜像，后续 rebase 用 `git fetch upstream`；
+> `loongarch-patch` 才是移植工作分支。
 
 ## 6. 用户手动测试（构建脚本不会启动 Minecraft）
 

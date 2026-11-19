@@ -1,6 +1,11 @@
 # <img src="https://gitlab.com/distant-horizons-team/distant-horizons-core/-/raw/main/_Misc%20Files/logo%20files/new/SVG/Distant-Horizons.svg" height="128px"> 
 _See farther without turning your game into a slide show._
 
+> **Unofficial LoongArch64 port / 非官方龙芯移植**
+> 本 fork 为 sqlite-jdbc 增加 `loongarch64` 原生库支持与构建流程。
+> 构建/测试说明见 [`loongarch/README.md`](loongarch/README.md)，可安装 jar 见仓库 Releases
+> （Fabric / Forge / NeoForge，MC 26.3.0 与 1.20.1）。
+
 <br>
 
 # What is Distant Horizons?
