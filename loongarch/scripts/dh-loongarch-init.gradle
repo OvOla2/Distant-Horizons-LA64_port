@@ -1,0 +1,56 @@
+// ---------------------------------------------------------------------------
+// dh-loongarch-init.gradle
+//
+// Gradle init script（不修改 DH 仓库中的任何构建文件）：
+// 把 org.xerial:sqlite-jdbc 的版本替换成本地构建的 LoongArch 版本。
+//
+// 之所以用「换版本号 + 独立本地 Maven 仓库」而不是直接覆盖：
+//   - 本地版本号（<upstream>-loongarch）只存在于我们的仓库中，
+//     因此 Gradle 一定会从本地仓库解析，不依赖仓库顺序；
+//   - 不触碰 DH 的 build.gradle / settings.gradle，rebase 上游时零冲突。
+//
+// 需要的系统属性（由 inject-so-into-dh-build.sh 传递）：
+//   -Ddh.loongarch.m2=<本地 Maven 仓库目录>
+//   -Ddh.loongarch.sqlite.version=<版本>-loongarch
+// ---------------------------------------------------------------------------
+def m2DirProperty = System.getProperty('dh.loongarch.m2')
+def patchedVersionProperty = System.getProperty('dh.loongarch.sqlite.version')
+
+if (m2DirProperty == null || patchedVersionProperty == null) {
+    throw new GradleException(
+            "缺少 -Ddh.loongarch.m2 / -Ddh.loongarch.sqlite.version；" +
+            "请通过 loongarch/scripts/build-dh-loongarch.sh 调用，或先运行 " +
+            "loongarch/scripts/inject-so-into-dh-build.sh")
+}
+
+def m2Dir = new File(m2DirProperty).absoluteFile
+if (!m2Dir.isDirectory()) {
+    throw new GradleException("本地 Maven 仓库不存在: ${m2Dir}（请先运行 inject-so-into-dh-build.sh）")
+}
+
+def patchedVersion = patchedVersionProperty
+def patchedGroup = 'org.xerial'
+def patchedName = 'sqlite-jdbc'
+
+gradle.beforeProject { project ->
+    project.repositories {
+        maven {
+            url = m2Dir.toURI()
+            // 只放一个 jar + 极简 POM，不需要 maven-metadata
+            metadataSources {
+                mavenPom()
+                artifact()
+            }
+        }
+    }
+
+    project.configurations.configureEach { configuration ->
+        configuration.resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == patchedGroup && details.requested.name == patchedName) {
+                details.useVersion(patchedVersion)
+                // 在依赖图上标注替换原因，便于 --info/--debug 排查
+                details.because("Distant Horizons LoongArch64: 使用含 loongarch64 原生库的本地 sqlite-jdbc 构建")
+            }
+        }
+    }
+}

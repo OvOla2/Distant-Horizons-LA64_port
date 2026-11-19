@@ -1,0 +1,20 @@
+diff --git a/src/main/java/org/sqlite/util/OSInfo.java b/src/main/java/org/sqlite/util/OSInfo.java
+index ec13e37..eff042c 100644
+--- a/src/main/java/org/sqlite/util/OSInfo.java
++++ b/src/main/java/org/sqlite/util/OSInfo.java
+@@ -49,6 +49,7 @@ public class OSInfo {
+     public static final String PPC = "ppc";
+     public static final String PPC64 = "ppc64";
+     public static final String RISCV64 = "riscv64";
++    public static final String LOONGARCH64 = "loongarch64";
+ 
+     static {
+         // x86 mappings
+@@ -90,6 +91,7 @@ public class OSInfo {
+         archMapping.put("ppc64le", PPC64);
+ 
+         archMapping.put(RISCV64, RISCV64);
++        archMapping.put(LOONGARCH64, LOONGARCH64);
+     }
+ 
+     public static void main(String[] args) {
